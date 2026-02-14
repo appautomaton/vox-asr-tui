@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Model weights & compiled binary — download via setup instructions
+bin/qwen_asr
+bin/qwen3-asr-0.6b/
+*.safetensors
+*.gguf

@@ -1,0 +1,24 @@
+[project]
+name = "tnt"
+version = "0.1.0"
+description = "TNT voice-to-text TUI powered by Qwen3-ASR"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "sounddevice>=0.5",
+    "textual>=3.0",
+]
+
+[project.scripts]
+tnt = "tnt.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
