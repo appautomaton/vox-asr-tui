@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Launch TNT inside proot with Termux API capture backend.
-# You can still override values by exporting them before running this script.
+# Launch TNT inside proot with canonical Termux API capture settings.
+# This script intentionally forces the known-good environment used in proot.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TERMUX_PREFIX_DEFAULT="/data/data/com.termux/files/usr"
 TERMUX_BIN_DEFAULT="${TERMUX_PREFIX_DEFAULT}/bin"
 TERMUX_TMP_DEFAULT="/data/data/com.termux/files/home/.cache/tnt"
 
-if [[ -d "${TERMUX_BIN_DEFAULT}" ]]; then
-  export PATH="${TERMUX_BIN_DEFAULT}:${PATH}"
-fi
+export PATH="${TERMUX_BIN_DEFAULT}:${PATH}"
 
-export TMPDIR="${TMPDIR:-${TERMUX_TMP_DEFAULT}}"
+export TMPDIR="${TERMUX_TMP_DEFAULT}"
 mkdir -p "${TMPDIR}"
 
-export TNT_CAPTURE_BACKEND="${TNT_CAPTURE_BACKEND:-termux_api}"
+export TNT_CAPTURE_BACKEND="termux_api"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Error: uv not found in PATH."

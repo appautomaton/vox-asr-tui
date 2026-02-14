@@ -4,21 +4,21 @@ This guide is only for Android + Termux + `proot` distro (Debian/Ubuntu, etc.).
 
 ## Important
 
-Do not use `--isolated` when launching your distro. TNT needs Termux-side tools/paths.
+Use different proot login modes for setup vs runtime.
 
-Use:
-
-```bash
-proot-distro login --user dev debian
-```
-
-Avoid:
+For setup/build (`uv sync`, `./bootstrap-qwen-asr.sh`), use `--isolated`:
 
 ```bash
 proot-distro login --isolated --user dev debian
 ```
 
-If you use a wrapper like `pd sh`, remove `--isolated` there too.
+For runtime (`./launch-tnt-proot.sh`), do not use `--isolated`:
+
+```bash
+proot-distro login --user dev debian
+```
+
+If you use a wrapper like `pd sh`, keep `--isolated` for setup/build shells and remove it for runtime launch shells.
 
 ## 1) Termux host setup (outside proot)
 
@@ -36,7 +36,7 @@ pkg install -y termux-api
 
 Grant microphone permission when Android prompts.
 
-## 2) proot setup (inside distro)
+## 2) proot setup (inside distro, with `--isolated`)
 
 ```bash
 sudo apt update
@@ -45,7 +45,7 @@ sudo apt install -y build-essential git libopenblas-dev libportaudio2 portaudio1
 
 `libopenblas-dev` is important. Without it, bootstrap builds a slower non-BLAS `qwen_asr`.
 
-## 3) Project setup (repo root, inside proot)
+## 3) Project setup (repo root, inside proot, with `--isolated`)
 
 ```bash
 rm -rf .venv
@@ -59,7 +59,7 @@ Bootstrap behavior is fixed:
 - builds `bin/qwen_asr`
 - downloads Qwen3-ASR-0.6B files into `bin/qwen3-asr-0.6b`
 
-## 4) Run
+## 4) Run (inside proot, without `--isolated`)
 
 ```bash
 ./launch-tnt-proot.sh
@@ -68,8 +68,8 @@ Bootstrap behavior is fixed:
 Launcher behavior:
 
 - sets `PATH` for Termux binaries
-- sets `TMPDIR`
-- defaults `TNT_CAPTURE_BACKEND=termux_api`
+- forces `TMPDIR=/data/data/com.termux/files/home/.cache/tnt`
+- forces `TNT_CAPTURE_BACKEND=termux_api`
 - runs `uv run tnt`
 
 ## Quick checks
@@ -83,8 +83,10 @@ uv run which tnt
 ## Troubleshooting
 
 - No mic capture:
-  - verify you are not using `--isolated`
+  - verify you are not using `--isolated` for `./launch-tnt-proot.sh`
   - ensure `termux-api` is installed on host and `Termux:API` app is installed
+- Setup/build issues (`uv sync` or bootstrap failures):
+  - verify you are using `--isolated` for setup/build steps
 - Slow transcription:
   - install `libopenblas-dev` and rerun `./bootstrap-qwen-asr.sh`
 - Wheel/import issues:
