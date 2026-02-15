@@ -16,6 +16,7 @@ class QwenTranscriber:
     ) -> None:
         self.binary_path = Path(binary_path).resolve()
         self.model_dir = Path(model_dir).resolve()
+        self._proc: asyncio.subprocess.Process | None = None
 
         self._validate()
 
@@ -63,8 +64,14 @@ class QwenTranscriber:
 
         return result.stdout.decode("utf-8").strip()
 
-    async def transcribe_async(self, wav_bytes: bytes) -> str:
-        """Run transcription asynchronously. Returns the transcribed text."""
+    async def transcribe_async(
+        self, wav_bytes: bytes, timeout: float = 120
+    ) -> str:
+        """Run transcription asynchronously with timeout.
+
+        Raises asyncio.TimeoutError if the process exceeds *timeout* seconds.
+        Raises asyncio.CancelledError if cancelled externally.
+        """
         proc = await asyncio.create_subprocess_exec(
             str(self.binary_path),
             "-d",
@@ -75,7 +82,16 @@ class QwenTranscriber:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(input=wav_bytes)
+        self._proc = proc
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=wav_bytes), timeout=timeout
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self.kill_process()
+            raise
+        finally:
+            self._proc = None
 
         if proc.returncode != 0:
             stderr_text = stderr.decode("utf-8", errors="replace").strip()
@@ -84,3 +100,13 @@ class QwenTranscriber:
             )
 
         return stdout.decode("utf-8").strip()
+
+    def kill_process(self) -> None:
+        """Kill the running qwen_asr subprocess if any."""
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass

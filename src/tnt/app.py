@@ -82,8 +82,13 @@ class HintBar(Static):
     state: reactive[str] = reactive("idle")
 
     def render(self) -> Text:
-        action = "stop" if self.state == "recording" else "record"
-        action_color = "#ff8ad8" if self.state == "recording" else "#9bff7a"
+        match self.state:
+            case "recording":
+                action, action_color = "stop", "#ff8ad8"
+            case "transcribing":
+                action, action_color = "cancel", "#ffd166"
+            case _:
+                action, action_color = "record", "#9bff7a"
         text = Text()
         text.append(" Space ", style="bold #090014 on #39ff14")
         text.append(f" {action}  ", style=f"bold {action_color}")
@@ -138,6 +143,7 @@ class TntApp(App):
         self._transcriber: QwenTranscriber | None = None
         self._recording_timer = None
         self._recording_session_id = 0
+        self._transcribe_worker = None
 
     def _init_transcriber(self) -> QwenTranscriber:
         """Lazily initialize the transcriber, raising clear errors."""
@@ -172,16 +178,19 @@ class TntApp(App):
         panel.push_level(self.recorder.get_level())
 
     def action_toggle_recording(self) -> None:
-        """Space key: toggle between idle/recording states."""
+        """Space key: toggle between idle/recording states, or cancel transcription."""
         match self.state:
             case "idle":
                 self._start_recording()
             case "recording":
                 self._stop_recording()
             case "transcribing":
-                self.notify(
-                    "Transcription in progress, please wait.", severity="warning"
-                )
+                self._cancel_transcription()
+
+    def _cancel_transcription(self) -> None:
+        """Cancel a running transcription and kill the subprocess."""
+        if self._transcribe_worker is not None:
+            self._transcribe_worker.cancel()
 
     def _start_recording(self) -> None:
         """Begin mic capture."""
@@ -203,10 +212,13 @@ class TntApp(App):
 
         self.state = "transcribing"
         session_id = self._recording_session_id
+        duration = self.recorder.elapsed()
         self.query_one(TranscriptView).show_placeholder()
-        self.run_worker(self._stop_and_transcribe(session_id))
+        self._transcribe_worker = self.run_worker(
+            self._stop_and_transcribe(session_id, duration)
+        )
 
-    async def _stop_and_transcribe(self, session_id: int) -> None:
+    async def _stop_and_transcribe(self, session_id: int, duration: float) -> None:
         """Async worker: stop capture and transcribe without blocking the UI."""
         tv = self.query_one(TranscriptView)
         try:
@@ -239,10 +251,18 @@ class TntApp(App):
             text = await transcriber.transcribe_async(wav_bytes)
             tv.remove_placeholder()
             if text:
-                tv.append(text)
-                self._copy_to_clipboard(text)
+                tv.append(text, duration=duration)
+                await asyncio.to_thread(self._copy_to_clipboard, text)
             else:
                 self.notify("No speech detected.", severity="warning")
+        except asyncio.TimeoutError:
+            tv.remove_placeholder()
+            self.notify("Transcription timed out.", severity="error")
+        except asyncio.CancelledError:
+            if self._transcriber is not None:
+                self._transcriber.kill_process()
+            tv.remove_placeholder()
+            self.notify("Transcription cancelled.", severity="warning")
         except FileNotFoundError as e:
             tv.remove_placeholder()
             self.notify(str(e), severity="error")
@@ -253,6 +273,7 @@ class TntApp(App):
             tv.remove_placeholder()
             self.notify(f"Error: {e}", severity="error")
         finally:
+            self._transcribe_worker = None
             if session_id == self._recording_session_id:
                 self.state = "idle"
 
