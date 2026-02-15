@@ -3,6 +3,15 @@
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
+ENTRY_TONES = (
+    "#2f2a44",  # dusk lavender
+    "#2a3547",  # dusty blue
+    "#3a2e44",  # muted plum
+    "#2b3b3f",  # dark pastel teal
+    "#3d2f37",  # muted rose
+    "#2e3a33",  # moss slate
+)
+
 
 class TranscriptEntry(Static):
     """A single transcript entry."""
@@ -11,7 +20,6 @@ class TranscriptEntry(Static):
     TranscriptEntry {
         padding: 0 1;
         margin: 0 0 1 0;
-        background: #160c31;
         color: #f4efff;
     }
     """
@@ -50,8 +58,11 @@ class TranscriptView(VerticalScroll):
     def append(self, text: str) -> None:
         """Add a new entry and scroll to bottom."""
         self.remove_placeholder()
+        tone = ENTRY_TONES[len(self._entries) % len(ENTRY_TONES)]
         self._entries.append(text)
-        self.mount(TranscriptEntry(text))
+        entry = TranscriptEntry(text)
+        entry.styles.background = tone
+        self.mount(entry)
         self.scroll_end(animate=False)
 
     def show_placeholder(self) -> None:
