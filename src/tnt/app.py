@@ -195,7 +195,13 @@ class TntApp(App):
             self._recording_timer.stop()
             self._recording_timer = None
 
-        wav_bytes = self.recorder.stop()
+        try:
+            wav_bytes = self.recorder.stop()
+        except Exception as e:
+            self.state = "idle"
+            self.notify(f"Stop error ({self.capture_backend}): {e}", severity="error")
+            return
+
         if not wav_bytes:
             self.state = "idle"
             self.notify("No audio captured.", severity="warning")

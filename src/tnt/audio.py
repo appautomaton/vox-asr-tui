@@ -312,6 +312,9 @@ class MicRecorder:
 class TermuxMicRecorder:
     """Record clips with termux-microphone-record, then transcode to WAV."""
 
+    _TERMUX_STATE_TIMEOUT_SECONDS = 5
+    _FFMPEG_TIMEOUT_SECONDS = 20
+
     def __init__(
         self,
         sample_rate: int = 16000,
@@ -344,12 +347,17 @@ class TermuxMicRecorder:
         wav_path = tmp_dir / "capture.wav"
 
         # Clear stale recorder state if an earlier session crashed.
-        subprocess.run(
-            ["termux-microphone-record", "-q"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                ["termux-microphone-record", "-q"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            # Best-effort stale-state clear; continue to explicit start call.
+            pass
 
         start_cmd = [
             "termux-microphone-record",
@@ -364,7 +372,20 @@ class TermuxMicRecorder:
             "-l",
             "0",
         ]
-        result = subprocess.run(start_cmd, capture_output=True, text=True, check=False)
+        try:
+            result = subprocess.run(
+                start_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._cleanup_paths(tmp_dir)
+            raise RuntimeError(
+                "Timed out while starting termux microphone recording."
+            ) from exc
+
         if result.returncode != 0:
             self._cleanup_paths(tmp_dir)
             stderr = (result.stderr or result.stdout or "").strip()
@@ -385,12 +406,19 @@ class TermuxMicRecorder:
             return b""
 
         self._recording = False
-        quit_result = subprocess.run(
-            ["termux-microphone-record", "-q"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            quit_result = subprocess.run(
+                ["termux-microphone-record", "-q"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._cleanup_paths()
+            raise RuntimeError(
+                "Timed out while stopping termux microphone recording."
+            ) from exc
 
         raw_path = self._raw_path
         wav_path = self._wav_path
@@ -423,7 +451,20 @@ class TermuxMicRecorder:
             "wav",
             str(wav_path),
         ]
-        convert = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=False)
+        try:
+            convert = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._FFMPEG_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._cleanup_paths()
+            raise RuntimeError(
+                "ffmpeg timed out while converting Termux recording to WAV."
+            ) from exc
+
         if convert.returncode != 0:
             stderr = (convert.stderr or convert.stdout or "").strip()
             self._cleanup_paths()
