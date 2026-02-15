@@ -240,6 +240,7 @@ class TntApp(App):
             tv.remove_placeholder()
             if text:
                 tv.append(text)
+                self._copy_to_clipboard(text)
             else:
                 self.notify("No speech detected.", severity="warning")
         except FileNotFoundError as e:
