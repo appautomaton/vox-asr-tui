@@ -1,5 +1,6 @@
 """Textual TUI app for voice-to-text transcription."""
 
+import asyncio
 import subprocess
 
 from rich.table import Table
@@ -136,6 +137,7 @@ class TntApp(App):
         self.recorder, self.capture_backend = create_recorder()
         self._transcriber: QwenTranscriber | None = None
         self._recording_timer = None
+        self._recording_session_id = 0
 
     def _init_transcriber(self) -> QwenTranscriber:
         """Lazily initialize the transcriber, raising clear errors."""
@@ -186,6 +188,7 @@ class TntApp(App):
             self.notify(f"Mic error ({self.capture_backend}): {e}", severity="error")
             return
 
+        self._recording_session_id += 1
         self.state = "recording"
         self._recording_timer = self.set_interval(0.1, self._update_recording_info)
 
@@ -195,44 +198,59 @@ class TntApp(App):
             self._recording_timer.stop()
             self._recording_timer = None
 
+        self.state = "transcribing"
+        session_id = self._recording_session_id
+        self.query_one(TranscriptView).show_placeholder()
+        self.run_worker(self._stop_and_transcribe(session_id))
+
+    async def _stop_and_transcribe(self, session_id: int) -> None:
+        """Async worker: stop capture and transcribe without blocking the UI."""
+        tv = self.query_one(TranscriptView)
         try:
-            wav_bytes = self.recorder.stop()
+            wav_bytes = await asyncio.wait_for(asyncio.to_thread(self.recorder.stop), 30)
+        except asyncio.TimeoutError:
+            tv.remove_placeholder()
+            self.notify(
+                f"Stop timed out ({self.capture_backend}); reset and try again.",
+                severity="error",
+            )
+            if session_id == self._recording_session_id:
+                self.state = "idle"
+            return
         except Exception as e:
-            self.state = "idle"
+            tv.remove_placeholder()
             self.notify(f"Stop error ({self.capture_backend}): {e}", severity="error")
+            if session_id == self._recording_session_id:
+                self.state = "idle"
             return
 
         if not wav_bytes:
-            self.state = "idle"
+            tv.remove_placeholder()
             self.notify("No audio captured.", severity="warning")
+            if session_id == self._recording_session_id:
+                self.state = "idle"
             return
 
-        self.state = "transcribing"
-        self.query_one(TranscriptView).show_placeholder()
-        self.run_worker(self._do_transcribe(wav_bytes))
-
-    async def _do_transcribe(self, wav_bytes: bytes) -> None:
-        """Async worker: runs transcription without blocking the UI."""
         try:
             transcriber = self._init_transcriber()
             text = await transcriber.transcribe_async(wav_bytes)
-            tv = self.query_one(TranscriptView)
             tv.remove_placeholder()
             if text:
                 tv.append(text)
             else:
                 self.notify("No speech detected.", severity="warning")
         except FileNotFoundError as e:
-            self.query_one(TranscriptView).remove_placeholder()
+            tv.remove_placeholder()
             self.notify(str(e), severity="error")
         except RuntimeError as e:
-            self.query_one(TranscriptView).remove_placeholder()
+            tv.remove_placeholder()
             self.notify(f"Transcription failed: {e}", severity="error")
         except Exception as e:
-            self.query_one(TranscriptView).remove_placeholder()
+            tv.remove_placeholder()
             self.notify(f"Error: {e}", severity="error")
         finally:
-            self.state = "idle"
+            if session_id == self._recording_session_id:
+                self.state = "idle"
 
     def action_copy_last(self) -> None:
         """Copy the last transcript entry to clipboard."""
