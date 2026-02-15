@@ -152,6 +152,9 @@ class TntApp(App):
             yield StatusPanel()
         yield HintBar()
 
+    def on_mount(self) -> None:
+        self.query_one(StatusPanel).capture_backend = self.capture_backend
+
     def watch_state(self, value: str) -> None:
         try:
             self.query_one(HeaderBar).state = value
