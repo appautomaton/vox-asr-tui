@@ -24,7 +24,8 @@ class HeaderBar(Static):
     HeaderBar {
         dock: top;
         height: 1;
-        background: $surface-lighten-1;
+        background: #100025;
+        color: #f8f4ff;
         padding: 0 1;
     }
     """
@@ -33,20 +34,23 @@ class HeaderBar(Static):
 
     def render(self) -> Table:
         left = Text()
-        left.append("● ", style="green")
-        left.append("TNT", style="bold")
-        left.append(" 🧨")
-        left.append(" — voice → text")
+        left.append("● ", style="bold #39ff14")
+        left.append("TNT", style="bold #ff4fd8")
+        left.append(" 🧨", style="bold #ffb703")
+        left.append(" — voice → text", style="#7afcff")
 
         right = Text()
-        right.append("qwen3-asr-0.6b │ 16kHz │ ")
+        right.append("qwen3-asr-0.6b", style="bold #8be9fd")
+        right.append(" │ ", style="#7a6aa5")
+        right.append("16kHz", style="bold #f1fa8c")
+        right.append(" │ ", style="#7a6aa5")
         match self.state:
             case "idle":
-                right.append("▮▮ IDLE", style="dim")
+                right.append("▮▮ IDLE", style="bold #7afcff")
             case "recording":
-                right.append("● REC", style="red")
+                right.append("● REC", style="bold #ff5ccf")
             case "transcribing":
-                right.append("◌ ...", style="yellow")
+                right.append("◌ ...", style="bold #ffd166")
 
         table = Table(
             show_header=False,
@@ -68,7 +72,8 @@ class HintBar(Static):
     HintBar {
         dock: bottom;
         height: 1;
-        background: $surface;
+        background: #140a2e;
+        color: #f8f4ff;
         padding: 0 1;
     }
     """
@@ -77,17 +82,18 @@ class HintBar(Static):
 
     def render(self) -> Text:
         action = "stop" if self.state == "recording" else "record"
+        action_color = "#ff8ad8" if self.state == "recording" else "#9bff7a"
         text = Text()
-        text.append(" Space ", style="reverse")
-        text.append(f" {action}  ")
-        text.append(" c ", style="reverse")
-        text.append(" copy last  ")
-        text.append(" C ", style="reverse")
-        text.append(" copy all  ")
-        text.append(" x ", style="reverse")
-        text.append(" clear  ")
-        text.append(" q ", style="reverse")
-        text.append(" quit")
+        text.append(" Space ", style="bold #090014 on #39ff14")
+        text.append(f" {action}  ", style=f"bold {action_color}")
+        text.append(" c ", style="bold #090014 on #00e5ff")
+        text.append(" copy last  ", style="#9cf6ff")
+        text.append(" C ", style="bold #090014 on #ff47d4")
+        text.append(" copy all  ", style="#ff9ce8")
+        text.append(" x ", style="bold #090014 on #ffd166")
+        text.append(" clear  ", style="#ffe8a3")
+        text.append(" q ", style="bold #090014 on #ff6b6b")
+        text.append(" quit", style="#ffb3b3")
         return text
 
 
@@ -97,6 +103,8 @@ class TntApp(App):
     CSS = """
     Screen {
         layout: vertical;
+        background: #090014;
+        color: #f8f4ff;
     }
 
     #main-layout {
@@ -238,20 +246,23 @@ class TntApp(App):
 
     def _copy_to_clipboard(self, text: str) -> None:
         """Try to copy text to system clipboard."""
-        for cmd in [
-            ["pbcopy"],
-            ["wl-copy"],
-            ["xclip", "-selection", "clipboard"],
-        ]:
+        commands: list[tuple[list[str], bool, str]] = [
+            (["termux-clipboard-set", text], False, "termux-clipboard-set"),
+            (["pbcopy"], True, "pbcopy"),
+            (["wl-copy"], True, "wl-copy"),
+            (["xclip", "-selection", "clipboard"], True, "xclip"),
+        ]
+        for cmd, use_stdin, label in commands:
             try:
+                input_bytes = text.encode("utf-8") if use_stdin else None
                 proc = subprocess.run(
                     cmd,
-                    input=text.encode("utf-8"),
+                    input=input_bytes,
                     capture_output=True,
                     timeout=2,
                 )
                 if proc.returncode == 0:
-                    self.notify("Copied to clipboard.")
+                    self.notify(f"Copied to clipboard ({label}).")
                     return
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue

@@ -19,8 +19,10 @@ class StatusPanel(Widget):
 
     DEFAULT_CSS = """
     StatusPanel {
-        border: solid $surface-lighten-2;
-        border-title-color: $text;
+        border: solid #00e5ff;
+        border-title-color: #ff9df0;
+        background: #12082a;
+        color: #f8f4ff;
         layout: vertical;
         align: center middle;
     }
@@ -36,6 +38,10 @@ class StatusPanel(Widget):
 
     #state-label {
         margin: 1 0 0 0;
+    }
+
+    #state-timer {
+        color: #7afcff;
     }
     """
 
@@ -79,7 +85,7 @@ class StatusPanel(Widget):
         """Update the timer display."""
         mins = int(seconds) // 60
         secs = seconds - (mins * 60)
-        text = Text(f"{mins:02d}:{secs:04.1f}s", style="dim", justify="center")
+        text = Text(f"{mins:02d}:{secs:04.1f}s", style="bold #7afcff", justify="center")
         try:
             self.query_one("#state-timer", Static).update(text)
         except Exception:
@@ -95,12 +101,19 @@ class StatusPanel(Widget):
             pass
 
     def _render_waveform(self) -> Text:
-        colors = {
-            "idle": "#666666",
-            "recording": "#ff6b6b",
-            "transcribing": "#c8a832",
+        palettes = {
+            "idle": ("#5f6cff", "#5ad8ff", "#8f7dff", "#6ef3ff"),
+            "recording": (
+                "#ff4fd8",
+                "#ff6f91",
+                "#ff9f1c",
+                "#ffe347",
+                "#42f5ff",
+                "#7f5dff",
+            ),
+            "transcribing": ("#ffe347", "#ffb347", "#ff71ce", "#8ef6ff", "#6d7bff"),
         }
-        color = colors.get(self.state, "#666666")
+        palette = palettes.get(self.state, palettes["idle"])
         text = Text(justify="center")
 
         for row in range(WAVEFORM_ROWS):
@@ -110,7 +123,7 @@ class StatusPanel(Widget):
                 height = round(self._levels[col] * WAVEFORM_ROWS)
                 threshold = WAVEFORM_ROWS - row
                 if height >= threshold:
-                    text.append("●", style=color)
+                    text.append("●", style=f"bold {palette[col % len(palette)]}")
                 else:
                     text.append(" ")
 
@@ -120,9 +133,9 @@ class StatusPanel(Widget):
         text = Text(justify="center")
         match self.state:
             case "idle":
-                text.append("■ READY", style="dim")
+                text.append("■ READY", style="bold #7afcff")
             case "recording":
-                text.append("● RECORDING", style="red")
+                text.append("● RECORDING", style="bold #ff5ccf")
             case "transcribing":
-                text.append("◌ TRANSCRIBING", style="yellow")
+                text.append("◌ TRANSCRIBING", style="bold #ffd166")
         return text

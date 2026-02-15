@@ -71,11 +71,13 @@ Launcher behavior:
 - forces `TMPDIR=/data/data/com.termux/files/home/.cache/tnt`
 - forces `TNT_CAPTURE_BACKEND=termux_api`
 - runs `uv run tnt`
+- copy keys (`c`/`C`) use `termux-clipboard-set` when available in runtime shell
 
 ## Quick checks
 
 ```bash
 command -v termux-microphone-record
+command -v termux-clipboard-set
 command -v ffmpeg
 uv run which tnt
 ```
@@ -85,6 +87,9 @@ uv run which tnt
 - No mic capture:
   - verify you are not using `--isolated` for `./launch-tnt-proot.sh`
   - ensure `termux-api` is installed on host and `Termux:API` app is installed
+- Copy key (`c`/`C`) says clipboard unavailable:
+  - verify runtime is non-`--isolated` (`./launch-tnt-proot.sh`)
+  - verify `command -v termux-clipboard-set`
 - Setup/build issues (`uv sync` or bootstrap failures):
   - verify you are using `--isolated` for setup/build steps
 - Slow transcription:

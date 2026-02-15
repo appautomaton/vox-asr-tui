@@ -11,6 +11,8 @@ class TranscriptEntry(Static):
     TranscriptEntry {
         padding: 0 1;
         margin: 0 0 1 0;
+        background: #160c31;
+        color: #f4efff;
     }
     """
 
@@ -22,6 +24,7 @@ class TranscriptPlaceholder(Static):
     TranscriptPlaceholder {
         padding: 0 1;
         margin: 0 0 1 0;
+        color: #ff71ce;
     }
     """
 
@@ -31,8 +34,10 @@ class TranscriptView(VerticalScroll):
 
     DEFAULT_CSS = """
     TranscriptView {
-        border: solid $surface-lighten-2;
-        border-title-color: $text;
+        border: solid #8e7dff;
+        border-title-color: #42f5ff;
+        background: #0d041f;
+        color: #f4efff;
         padding: 1;
     }
     """
@@ -52,7 +57,7 @@ class TranscriptView(VerticalScroll):
     def show_placeholder(self) -> None:
         """Show a transcription-in-progress cursor."""
         self.remove_placeholder()
-        self.mount(TranscriptPlaceholder("[yellow]▊[/]", id="transcript-placeholder"))
+        self.mount(TranscriptPlaceholder("[#ff71ce]▊[/]", id="transcript-placeholder"))
         self.scroll_end(animate=False)
 
     def remove_placeholder(self) -> None:
