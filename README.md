@@ -6,31 +6,39 @@ Press Space to record, Space again to transcribe. All local, no network calls.
 
 ## Setup
 
-Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and a C compiler (for the ASR binary).
+> [!NOTE]
+> Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and a C compiler (for the ASR binary).
+>
+> On macOS (Apple Silicon), BLAS uses Apple Accelerate automatically (`make blas` path).
+> If compile tools are missing, run `xcode-select --install`.
 
-On macOS (Apple Silicon), BLAS uses Apple Accelerate automatically (`make blas` path).  
-If compile tools are missing, run `xcode-select --install`.
+| Platform | Instructions |
+|----------|-------------|
+| Linux / macOS | Follow the steps below |
+| Android proot (Termux + Debian/Ubuntu) | See [`README_android.md`](README_android.md) |
 
-### Platform usage
-
-- Linux/macOS: use the standard setup and run steps in this section.
-- Android `proot` (Termux + Debian/Ubuntu): use `README_android.md`.
-
-### Quick start (recommended)
+### Quick start
 
 ```bash
-git clone <your-repo-url>
-cd <your-repo-dir>
+git clone https://github.com/appautomaton/tnt-asr.git
+cd tnt-asr
 uv sync
 ./bootstrap-qwen-asr.sh
 uv run tnt
 ```
 
-Everything stays inside this repo (`bin/`), so there is no `/tmp` build step.
-`bootstrap-qwen-asr.sh` uses vendored source at `bin/qwen-asr/`, builds `bin/qwen_asr`, and downloads Qwen3-ASR-0.6B files to `bin/qwen3-asr-0.6b/`.
-`bin/qwen-asr/` is intended to be retained and committed in this repository.
+> [!IMPORTANT]
+> `model.safetensors` is ~1.7 GB. The bootstrap script will download it on first run.
 
-`model.safetensors` is ~1.7 GB.
+<details>
+<summary>What does bootstrap do?</summary>
+
+- Uses vendored source at `bin/qwen-asr/` to compile `bin/qwen_asr`
+- Downloads Qwen3-ASR-0.6B model files to `bin/qwen3-asr-0.6b/`
+- Everything stays inside the repo (`bin/`), no `/tmp` build step
+- `bin/qwen-asr/` is intended to be retained and committed in this repository
+
+</details>
 
 ### Run
 
@@ -38,49 +46,45 @@ Everything stays inside this repo (`bin/`), so there is no `/tmp` build step.
 uv run tnt
 ```
 
-## Android
-
-Android `proot` (Termux + Debian/Ubuntu) has a different setup path.  
-Use `README_android.md` for full instructions.
-
 ## Keybindings
 
-| Key     | Action                                          |
-|---------|-------------------------------------------------|
-| `Space` | Start/stop recording                            |
-| `c`     | Copy last transcript entry to system clipboard  |
-| `C`     | Copy all transcript entries to system clipboard |
-| `x`     | Clear transcript                                |
-| `q`     | Quit                                            |
+| Key | Action |
+|-----|--------|
+| <kbd>Space</kbd> | Start / stop recording |
+| <kbd>c</kbd> | Copy last transcript entry to clipboard |
+| <kbd>C</kbd> | Copy all transcript entries to clipboard |
+| <kbd>x</kbd> | Clear transcript |
+| <kbd>q</kbd> | Quit |
 
 ## Project structure
 
-```
+```text
 src/tnt/
-├── app.py           # Textual TUI, state machine, keybindings
-├── audio.py         # Mic capture via sounddevice, WAV encoding
-├── transcriber.py   # Subprocess wrapper for qwen_asr binary
+├── app.py             # Textual TUI, state machine, keybindings
+├── audio.py           # Capture backends (live + termux_api)
+├── transcriber.py     # Subprocess wrapper for qwen_asr binary
 └── widgets/
     ├── transcript.py  # Scrollable transcript log
     └── status.py      # Recording indicator + audio level visualizer
 bin/
-├── qwen-asr              # upstream C source snapshot used for local builds
-├── qwen_asr              # compiled C binary (gitignored)
-└── qwen3-asr-0.6b/       # model weights (gitignored)
+├── qwen-asr/          # Upstream C source snapshot (committed)
+├── qwen_asr           # Compiled binary (gitignored)
+└── qwen3-asr-0.6b/    # Model weights (gitignored)
 ```
+
+## Notes
+
+> [!TIP]
+> - Audio format: 16 kHz, mono, 16-bit PCM — what the `qwen_asr` binary expects.
+> - Inference is CPU-only via the C binary. No GPU, no PyTorch, no transformers.
+> - The binary and model weights are gitignored. Each developer downloads them locally via bootstrap.
 
 ## Third-party attribution
 
 - ASR binary source: [`antirez/qwen-asr`](https://github.com/antirez/qwen-asr)
 - Upstream license: MIT
-- Third-party notice is included in `LICENSE`.
-
-## Notes
-
-- Audio format: 16 kHz, mono, 16-bit PCM — what the qwen_asr binary expects.
-- Inference is CPU-only via the C binary. No GPU, no PyTorch, no transformers.
-- The binary and model weights are gitignored. Each developer downloads them locally per the instructions above.
+- Third-party notice is included in [`LICENSE`](LICENSE).
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).
