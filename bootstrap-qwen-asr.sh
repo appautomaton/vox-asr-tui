@@ -4,18 +4,20 @@ set -euo pipefail
 # Bootstrap TNT ASR runtime from vendored qwen-asr source.
 # This script always:
 # 1) builds bin/qwen_asr from bin/qwen-asr
-# 2) downloads Qwen3-ASR-0.6B files to bin/qwen3-asr-0.6b
+# 2) downloads Qwen3-ASR-1.7B files to bin/qwen3-asr-1.7b
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
 SRC_DIR="${ROOT_DIR}/bin/qwen-asr"
 OUT_BIN="${ROOT_DIR}/bin/qwen_asr"
-MODEL_DIR="${ROOT_DIR}/bin/qwen3-asr-0.6b"
-MODEL_BASE_URL="https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/main"
+MODEL_DIR="${ROOT_DIR}/bin/qwen3-asr-1.7b"
+MODEL_BASE_URL="https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/main"
 MODEL_FILES=(
   "config.json"
   "generation_config.json"
-  "model.safetensors"
+  "model.safetensors.index.json"
+  "model-00001-of-00002.safetensors"
+  "model-00002-of-00002.safetensors"
   "vocab.json"
   "merges.txt"
 )
@@ -99,11 +101,11 @@ download_models() {
     dest="${MODEL_DIR}/${file}"
     url="${MODEL_BASE_URL}/${file}"
 
-    if [[ "${file}" == "model.safetensors" ]]; then
+    if [[ "${file}" == model-*.safetensors ]]; then
       # Skip if likely complete; otherwise resume partial download.
       if [[ -s "${dest}" ]]; then
         size_bytes="$(wc -c <"${dest}")"
-        if [[ "${size_bytes}" -ge 1500000000 ]]; then
+        if [[ "${size_bytes}" -ge 2000000000 ]]; then
           echo "Model file already present: ${dest}"
           continue
         fi

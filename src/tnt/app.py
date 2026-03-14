@@ -1,6 +1,7 @@
 """Textual TUI app for voice-to-text transcription."""
 
 import asyncio
+import signal
 import subprocess
 
 from rich.table import Table
@@ -13,7 +14,15 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from tnt.audio import Recorder, create_recorder
-from tnt.transcriber import QwenTranscriber
+from tnt.transcriber import (
+    AsrBackend,
+    Transcriber,
+    create_transcriber_with_fallback,
+    hint_label_for_backend,
+    model_label_for_backend,
+    other_asr_backend,
+    resolve_asr_backend,
+)
 from tnt.widgets.status import StatusPanel
 from tnt.widgets.transcript import TranscriptView
 
@@ -32,6 +41,7 @@ class HeaderBar(Static):
     """
 
     state: reactive[str] = reactive("idle")
+    backend_label: reactive[str] = reactive(model_label_for_backend("moonshine"))
 
     def render(self) -> Table:
         left = Text()
@@ -41,7 +51,7 @@ class HeaderBar(Static):
         left.append(" — voice → text", style="#7afcff")
 
         right = Text()
-        right.append("qwen3-asr-0.6b", style="bold #8be9fd")
+        right.append(self.backend_label, style="bold #8be9fd")
         right.append(" │ ", style="#7a6aa5")
         right.append("16kHz", style="bold #f1fa8c")
         right.append(" │ ", style="#7a6aa5")
@@ -80,6 +90,7 @@ class HintBar(Static):
     """
 
     state: reactive[str] = reactive("idle")
+    backend_label: reactive[str] = reactive(hint_label_for_backend("moonshine"))
 
     def render(self) -> Text:
         match self.state:
@@ -98,13 +109,18 @@ class HintBar(Static):
         text.append(" copy all  ", style="#ff9ce8")
         text.append(" x ", style="bold #090014 on #ffd166")
         text.append(" clear  ", style="#ffe8a3")
+        text.append(" m ", style="bold #090014 on #9bf6ff")
+        text.append(f" {self.backend_label}  ", style="#cff7ff")
         text.append(" q ", style="bold #090014 on #ff6b6b")
         text.append(" quit", style="#ffb3b3")
         return text
 
 
 class TntApp(App):
-    """Voice-to-text TUI powered by Qwen3-ASR."""
+    """Voice-to-text TUI powered by local ASR backends."""
+
+    _SPACE_PENDING_STOP_SECONDS = 0.18
+    _SPACE_HOLD_RELEASE_WINDOW_SECONDS = 0.30
 
     CSS = """
     Screen {
@@ -131,6 +147,7 @@ class TntApp(App):
         Binding("c", "copy_last", "Copy last", show=False),
         Binding("C", "copy_all", "Copy all", show=False),
         Binding("x", "clear_transcript", "Clear", show=False),
+        Binding("m", "switch_asr", "Switch ASR", show=False),
         Binding("q", "quit", "Quit", show=False),
     ]
 
@@ -139,17 +156,36 @@ class TntApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.recorder: Recorder
-        self.recorder, self.capture_backend = create_recorder()
-        self._transcriber: QwenTranscriber | None = None
+        self.recorder = create_recorder()
+        self.asr_backend: AsrBackend = resolve_asr_backend()
+        self._transcriber: Transcriber | None = None
+        self._transcriber_backend: AsrBackend | None = None
         self._recording_timer = None
         self._recording_session_id = 0
         self._transcribe_worker = None
+        self._space_recording_mode = "ready"
+        self._space_mode_generation = 0
 
-    def _init_transcriber(self) -> QwenTranscriber:
-        """Lazily initialize the transcriber, raising clear errors."""
-        if self._transcriber is None:
-            self._transcriber = QwenTranscriber()
-        return self._transcriber
+    def _init_transcriber(self) -> Transcriber:
+        """Lazily initialize transcriber with automatic backend fallback."""
+        if self._transcriber is not None and self._transcriber_backend == self.asr_backend:
+            return self._transcriber
+
+        transcriber, active_backend, warning = create_transcriber_with_fallback(
+            self.asr_backend
+        )
+        self._transcriber = transcriber
+        self._transcriber_backend = active_backend
+
+        if active_backend != self.asr_backend:
+            self.asr_backend = active_backend
+            self._refresh_backend_ui()
+            if warning:
+                self.notify(warning, severity="warning")
+        else:
+            self._refresh_backend_ui()
+
+        return transcriber
 
     def compose(self) -> ComposeResult:
         yield HeaderBar()
@@ -159,13 +195,23 @@ class TntApp(App):
         yield HintBar()
 
     def on_mount(self) -> None:
-        self.query_one(StatusPanel).capture_backend = self.capture_backend
+        self._refresh_backend_ui()
 
     def watch_state(self, value: str) -> None:
         try:
             self.query_one(HeaderBar).state = value
             self.query_one(StatusPanel).state = value
             self.query_one(HintBar).state = value
+        except Exception:
+            pass
+
+    def _refresh_backend_ui(self) -> None:
+        """Refresh backend labels shown in header and hint bar."""
+        label = model_label_for_backend(self.asr_backend)
+        hint_label = hint_label_for_backend(self.asr_backend)
+        try:
+            self.query_one(HeaderBar).backend_label = label
+            self.query_one(HintBar).backend_label = hint_label
         except Exception:
             pass
 
@@ -178,26 +224,100 @@ class TntApp(App):
         panel.push_level(self.recorder.get_level())
 
     def action_toggle_recording(self) -> None:
-        """Space key: toggle between idle/recording states, or cancel transcription."""
+        """Space key: tap toggles, while a held key records until release."""
         match self.state:
             case "idle":
                 self._start_recording()
             case "recording":
-                self._stop_recording()
+                self._handle_recording_space()
             case "transcribing":
                 self._cancel_transcription()
 
+    def _handle_recording_space(self) -> None:
+        """Interpret Space during recording as a tap stop or held-key repeat."""
+        match self._space_recording_mode:
+            case "hold":
+                self._arm_space_hold_release_timer()
+            case "pending_stop":
+                self._space_recording_mode = "hold"
+                self._arm_space_hold_release_timer()
+            case _:
+                self._space_recording_mode = "pending_stop"
+                self._space_mode_generation += 1
+                generation = self._space_mode_generation
+                self.set_timer(
+                    self._SPACE_PENDING_STOP_SECONDS,
+                    lambda: self._resolve_pending_space_stop(generation),
+                )
+
+    def _arm_space_hold_release_timer(self) -> None:
+        """Refresh the inferred release timer while key-repeat is still arriving."""
+        self._space_mode_generation += 1
+        generation = self._space_mode_generation
+        self.set_timer(
+            self._SPACE_HOLD_RELEASE_WINDOW_SECONDS,
+            lambda: self._finish_space_hold(generation),
+        )
+
+    def _resolve_pending_space_stop(self, generation: int) -> None:
+        """Commit a stop when a follow-up repeat does not arrive."""
+        if generation != self._space_mode_generation:
+            return
+
+        if self.state == "recording" and self._space_recording_mode == "pending_stop":
+            self._space_recording_mode = "ready"
+            self._stop_recording()
+
+    def _finish_space_hold(self, generation: int) -> None:
+        """Stop recording once key-repeat stops, which approximates key release."""
+        if generation != self._space_mode_generation:
+            return
+
+        if self.state == "recording" and self._space_recording_mode == "hold":
+            self._space_recording_mode = "ready"
+            self._stop_recording()
+
+    def _reset_space_recording_mode(self) -> None:
+        """Clear inferred Space press state and invalidate pending timers."""
+        self._space_recording_mode = "ready"
+        self._space_mode_generation += 1
+
+    def action_switch_asr(self) -> None:
+        """Switch ASR backend while idle."""
+        if self.state != "idle":
+            self.notify("Switch ASR only while idle.", severity="warning")
+            return
+
+        if self._transcriber is not None:
+            self._transcriber.kill_process()
+            self._transcriber = None
+            self._transcriber_backend = None
+
+        self.asr_backend = other_asr_backend(self.asr_backend)
+        self._refresh_backend_ui()
+        self.notify(f"ASR backend: {model_label_for_backend(self.asr_backend)}.")
+
+    def action_quit(self) -> None:
+        """Quit the app, killing any in-flight transcription subprocess first."""
+        if self._transcriber is not None:
+            self._transcriber.kill_process()
+        self.exit()
+
     def _cancel_transcription(self) -> None:
         """Cancel a running transcription and kill the subprocess."""
+        self._reset_space_recording_mode()
+        if self._transcriber is not None:
+            self._transcriber.kill_process()
         if self._transcribe_worker is not None:
             self._transcribe_worker.cancel()
 
     def _start_recording(self) -> None:
         """Begin mic capture."""
+        self._reset_space_recording_mode()
         try:
             self.recorder.start()
         except Exception as e:
-            self.notify(f"Mic error ({self.capture_backend}): {e}", severity="error")
+            self.notify(f"Mic error: {e}", severity="error")
             return
 
         self._recording_session_id += 1
@@ -206,6 +326,7 @@ class TntApp(App):
 
     def _stop_recording(self) -> None:
         """Stop mic capture, launch transcription worker."""
+        self._reset_space_recording_mode()
         if self._recording_timer is not None:
             self._recording_timer.stop()
             self._recording_timer = None
@@ -226,7 +347,7 @@ class TntApp(App):
         except asyncio.TimeoutError:
             tv.remove_placeholder()
             self.notify(
-                f"Stop timed out ({self.capture_backend}); reset and try again.",
+                "Stop timed out; reset and try again.",
                 severity="error",
             )
             if session_id == self._recording_session_id:
@@ -234,7 +355,7 @@ class TntApp(App):
             return
         except Exception as e:
             tv.remove_placeholder()
-            self.notify(f"Stop error ({self.capture_backend}): {e}", severity="error")
+            self.notify(f"Stop error: {e}", severity="error")
             if session_id == self._recording_session_id:
                 self.state = "idle"
             return
@@ -252,7 +373,14 @@ class TntApp(App):
             tv.remove_placeholder()
             if text:
                 tv.append(text, duration=duration)
-                await asyncio.to_thread(self._copy_to_clipboard, text)
+                try:
+                    label = await asyncio.wait_for(
+                        asyncio.to_thread(self._try_clipboard_copy, text), timeout=5
+                    )
+                    if label:
+                        self.notify(f"Copied to clipboard ({label}).")
+                except asyncio.TimeoutError:
+                    pass
             else:
                 self.notify("No speech detected.", severity="warning")
         except asyncio.TimeoutError:
@@ -283,7 +411,11 @@ class TntApp(App):
         if not text:
             self.notify("Nothing to copy.", severity="warning")
             return
-        self._copy_to_clipboard(text)
+        label = self._try_clipboard_copy(text)
+        if label:
+            self.notify(f"Copied to clipboard ({label}).")
+        else:
+            self.notify("Clipboard not available; text stored in buffer.", severity="warning")
 
     def action_copy_all(self) -> None:
         """Copy all transcript entries to clipboard."""
@@ -291,12 +423,20 @@ class TntApp(App):
         if not text:
             self.notify("Nothing to copy.", severity="warning")
             return
-        self._copy_to_clipboard(text)
+        label = self._try_clipboard_copy(text)
+        if label:
+            self.notify(f"Copied to clipboard ({label}).")
+        else:
+            self.notify("Clipboard not available; text stored in buffer.", severity="warning")
 
-    def _copy_to_clipboard(self, text: str) -> None:
-        """Try to copy text to system clipboard."""
+    def _try_clipboard_copy(self, text: str) -> str | None:
+        """Try to copy text to system clipboard.
+
+        Returns the backend label on success, or None on failure.
+        Does NOT call self.notify() — callers handle notification so
+        this method is safe to run in a worker thread via asyncio.to_thread.
+        """
         commands: list[tuple[list[str], bool, str]] = [
-            (["termux-clipboard-set", text], False, "termux-clipboard-set"),
             (["pbcopy"], True, "pbcopy"),
             (["wl-copy"], True, "wl-copy"),
             (["xclip", "-selection", "clipboard"], True, "xclip"),
@@ -311,13 +451,10 @@ class TntApp(App):
                     timeout=2,
                 )
                 if proc.returncode == 0:
-                    self.notify(f"Copied to clipboard ({label}).")
-                    return
+                    return label
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
-        self.notify(
-            "Clipboard not available; text stored in buffer.", severity="warning"
-        )
+        return None
 
     def action_clear_transcript(self) -> None:
         """Clear all transcript entries."""
@@ -327,7 +464,26 @@ class TntApp(App):
 
 def main() -> None:
     app = TntApp()
-    app.run()
+
+    # On SIGINT (Ctrl-C), kill any in-flight subprocess so the worker
+    # thread unblocks and the thread pool can join cleanly on exit.
+    # Do NOT raise KeyboardInterrupt here — let the default handler do that
+    # after we've cleaned up, otherwise the signal re-enters the asyncio loop.
+    _orig_sigint = signal.getsignal(signal.SIGINT)
+
+    def _handle_sigint(sig: int, frame: object) -> None:
+        if app._transcriber is not None:
+            app._transcriber.kill_process()
+        signal.signal(signal.SIGINT, _orig_sigint)
+        signal.raise_signal(signal.SIGINT)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    try:
+        app.run()
+    finally:
+        if app._transcriber is not None:
+            app._transcriber.kill_process()
 
 
 if __name__ == "__main__":

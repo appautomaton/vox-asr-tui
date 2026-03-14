@@ -61,7 +61,6 @@ class StatusPanel(Widget):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.border_title = "Status"
-        self.capture_backend: str = "live"
         self._levels: deque[float] = deque(
             [IDLE_LEVEL] * WAVEFORM_COLS, maxlen=WAVEFORM_COLS
         )
@@ -97,11 +96,7 @@ class StatusPanel(Widget):
 
     def push_level(self, level: float) -> None:
         """Push a new audio level sample and refresh the waveform."""
-        if self.capture_backend == "termux_api" and self.state == "recording":
-            self._sine_tick += 1
-            self._apply_sine_levels(amplitude=0.40, baseline=0.15, speed=0.25)
-        else:
-            self._levels.append(level)
+        self._levels.append(level)
 
         try:
             self.query_one("#waveform", Static).update(self._render_waveform())

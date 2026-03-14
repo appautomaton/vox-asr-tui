@@ -1,7 +1,7 @@
 [project]
 name = "tnt"
 version = "0.1.0"
-description = "TNT voice-to-text TUI powered by Qwen3-ASR"
+description = "TNT voice-to-text TUI with Moonshine and Qwen ASR backends"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

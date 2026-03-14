@@ -1,16 +1,12 @@
-"""Mic capture backends for live desktop and Termux API clip recording."""
+"""Mic capture for desktop and laptop live audio input."""
 
 import io
 import math
 import os
-import shutil
-import subprocess
-import tempfile
 import threading
 import time
 import wave
-from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -21,9 +17,6 @@ except Exception as exc:  # pragma: no cover - env-dependent import failure
     _SOUNDDEVICE_IMPORT_ERROR: Exception | None = exc
 else:
     _SOUNDDEVICE_IMPORT_ERROR = None
-
-CaptureBackend = Literal["live", "termux_api"]
-
 
 class Recorder(Protocol):
     """Shared recorder interface used by the app state machine."""
@@ -49,84 +42,9 @@ def create_recorder(
     sample_rate: int = 16000,
     channels: int = 1,
     dtype: str = "int16",
-) -> tuple[Recorder, CaptureBackend]:
-    """Build the best available recorder backend for this environment."""
-    backend = resolve_capture_backend()
-    requested = os.environ.get("TNT_CAPTURE_BACKEND", "").strip().lower()
-    explicit_backend = requested in {"live", "termux_api"}
-    errors: dict[str, str] = {}
-
-    def build_live() -> MicRecorder:
-        return MicRecorder(sample_rate=sample_rate, channels=channels, dtype=dtype)
-
-    def build_termux() -> TermuxMicRecorder:
-        return TermuxMicRecorder(
-            sample_rate=sample_rate,
-            channels=channels,
-            dtype=dtype,
-        )
-
-    if backend == "termux_api":
-        try:
-            return (build_termux(), "termux_api")
-        except RuntimeError as exc:
-            errors["termux_api"] = str(exc)
-            if explicit_backend:
-                raise
-
-        try:
-            return (build_live(), "live")
-        except RuntimeError as exc:
-            errors["live"] = str(exc)
-            raise RuntimeError(_format_backend_errors(errors)) from exc
-
-    try:
-        return (build_live(), "live")
-    except RuntimeError as exc:
-        errors["live"] = str(exc)
-        if explicit_backend:
-            raise
-
-    try:
-        return (build_termux(), "termux_api")
-    except RuntimeError as exc:
-        errors["termux_api"] = str(exc)
-        raise RuntimeError(_format_backend_errors(errors)) from exc
-
-
-def _format_backend_errors(errors: dict[str, str]) -> str:
-    """Build a compact error message when all capture backends are unavailable."""
-    lines = ["No usable audio capture backend found."]
-    for backend in ("live", "termux_api"):
-        detail = errors.get(backend)
-        if detail:
-            lines.append(f"{backend}: {detail}")
-    lines.append("Set TNT_CAPTURE_BACKEND=live or TNT_CAPTURE_BACKEND=termux_api.")
-    return "\n".join(lines)
-
-
-def resolve_capture_backend() -> CaptureBackend:
-    """Resolve capture backend from env var or runtime environment."""
-    requested = os.environ.get("TNT_CAPTURE_BACKEND", "").strip().lower()
-    if requested == "live":
-        return "live"
-    if requested == "termux_api":
-        return "termux_api"
-    if _in_proot():
-        return "termux_api"
-    return "live"
-
-
-def _in_proot() -> bool:
-    """Best-effort detection for proot sessions."""
-    return any(
-        key in os.environ for key in ("PROOT_TMP_DIR", "PROOT_LOADER", "PROOT_VERSION")
-    )
-
-
-def _termux_command_available() -> bool:
-    """Whether termux microphone API wrapper is invokable from this shell."""
-    return shutil.which("termux-microphone-record") is not None
+) -> Recorder:
+    """Build the live microphone recorder used on laptop targets."""
+    return MicRecorder(sample_rate=sample_rate, channels=channels, dtype=dtype)
 
 
 class MicRecorder:
@@ -144,7 +62,7 @@ class MicRecorder:
             raise RuntimeError(
                 "Live microphone backend unavailable: sounddevice failed to load.\n"
                 f"Reason: {detail}\n"
-                "Install PortAudio or set TNT_CAPTURE_BACKEND=termux_api."
+                "Install PortAudio and retry."
             )
 
         self.sample_rate = sample_rate
@@ -231,10 +149,8 @@ class MicRecorder:
         del frames, time_info, status
         chunk = indata.copy()
 
-        # Compute RMS level on a perceptual dB scale.
         samples = chunk.astype(np.float64)
         rms = np.sqrt(np.mean(samples**2))
-        # Map RMS to 0.0-1.0 using dB scale (-60 dB .. 0 dB).
         if rms > 1.0:
             db = 20.0 * math.log10(rms / 32767.0)
             normalized = max(0.0, min(1.0, (db + 60.0) / 60.0))
@@ -250,7 +166,7 @@ class MicRecorder:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(self.channels)
-            wf.setsampwidth(2)  # 16-bit = 2 bytes
+            wf.setsampwidth(2)
             wf.setframerate(self.sample_rate)
             wf.writeframes(audio_data.tobytes())
         return buf.getvalue()
@@ -271,15 +187,8 @@ class MicRecorder:
     def _build_mic_error(self, base_error: str) -> str:
         """Create a user-facing mic error with actionable setup hints."""
         lines = [base_error]
-        lines.append("Set TNT_INPUT_DEVICE to an input index/name if needed.")
+        lines.append("Set TNT_INPUT_DEVICE to an input index or device name if needed.")
         lines.extend(self._list_input_hints(limit=5))
-
-        if _termux_command_available():
-            lines.append("Fallback available: set TNT_CAPTURE_BACKEND=termux_api.")
-        if _in_proot():
-            lines.append(
-                "proot note: live mic requires host audio forwarding (PulseAudio/PipeWire)."
-            )
         return "\n".join(lines)
 
     def _list_input_hints(self, limit: int = 5) -> list[str]:
@@ -307,219 +216,3 @@ class MicRecorder:
         if not hints:
             return ["No input-capable devices reported by PortAudio."]
         return hints
-
-
-class TermuxMicRecorder:
-    """Record clips with termux-microphone-record, then transcode to WAV."""
-
-    _TERMUX_STATE_TIMEOUT_SECONDS = 5
-    _FFMPEG_TIMEOUT_SECONDS = 20
-
-    def __init__(
-        self,
-        sample_rate: int = 16000,
-        channels: int = 1,
-        dtype: str = "int16",
-    ) -> None:
-        del dtype  # Termux API controls encoder format; ffmpeg normalizes to WAV.
-        self.sample_rate = sample_rate
-        self.channels = channels
-
-        self._recording = False
-        self._start_time: float = 0.0
-        self._tmp_dir: Path | None = None
-        self._raw_path: Path | None = None
-        self._wav_path: Path | None = None
-        self._validate_tools()
-
-    @property
-    def is_recording(self) -> bool:
-        return self._recording
-
-    def start(self) -> None:
-        """Start Termux API recording to a temporary compressed file."""
-        if self._recording:
-            return
-
-        self._cleanup_paths()
-        tmp_dir = Path(tempfile.mkdtemp(prefix="tnt-termux-"))
-        raw_path = tmp_dir / "capture.opus"
-        wav_path = tmp_dir / "capture.wav"
-
-        # Clear stale recorder state if an earlier session crashed.
-        try:
-            subprocess.run(
-                ["termux-microphone-record", "-q"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            # Best-effort stale-state clear; continue to explicit start call.
-            pass
-
-        start_cmd = [
-            "termux-microphone-record",
-            "-f",
-            str(raw_path),
-            "-e",
-            "opus",
-            "-r",
-            str(self.sample_rate),
-            "-c",
-            str(self.channels),
-            "-l",
-            "0",
-        ]
-        try:
-            result = subprocess.run(
-                start_cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            self._cleanup_paths(tmp_dir)
-            raise RuntimeError(
-                "Timed out while starting termux microphone recording."
-            ) from exc
-
-        if result.returncode != 0:
-            self._cleanup_paths(tmp_dir)
-            stderr = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(
-                "Failed to start termux microphone recording.\n"
-                f"{stderr or 'Unknown error from termux-microphone-record.'}"
-            )
-
-        self._tmp_dir = tmp_dir
-        self._raw_path = raw_path
-        self._wav_path = wav_path
-        self._start_time = time.monotonic()
-        self._recording = True
-
-    def stop(self) -> bytes:
-        """Stop recording, convert clip to WAV, and return bytes."""
-        if not self._recording:
-            return b""
-
-        self._recording = False
-        try:
-            quit_result = subprocess.run(
-                ["termux-microphone-record", "-q"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self._TERMUX_STATE_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            self._cleanup_paths()
-            raise RuntimeError(
-                "Timed out while stopping termux microphone recording."
-            ) from exc
-
-        raw_path = self._raw_path
-        wav_path = self._wav_path
-        if raw_path is None or wav_path is None:
-            self._cleanup_paths()
-            return b""
-
-        for _ in range(20):
-            if raw_path.exists() and raw_path.stat().st_size > 0:
-                break
-            time.sleep(0.05)
-
-        if not raw_path.exists() or raw_path.stat().st_size == 0:
-            self._cleanup_paths()
-            return b""
-
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-nostdin",
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(raw_path),
-            "-ac",
-            "1",
-            "-ar",
-            str(self.sample_rate),
-            "-f",
-            "wav",
-            str(wav_path),
-        ]
-        try:
-            convert = subprocess.run(
-                ffmpeg_cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self._FFMPEG_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            self._cleanup_paths()
-            raise RuntimeError(
-                "ffmpeg timed out while converting Termux recording to WAV."
-            ) from exc
-
-        if convert.returncode != 0:
-            stderr = (convert.stderr or convert.stdout or "").strip()
-            self._cleanup_paths()
-            raise RuntimeError(
-                "Failed to convert Termux recording to WAV with ffmpeg.\n"
-                f"{stderr or 'Unknown ffmpeg conversion error.'}"
-            )
-
-        if not wav_path.exists():
-            self._cleanup_paths()
-            raise RuntimeError("WAV conversion completed but output file was not created.")
-
-        wav_bytes = wav_path.read_bytes()
-        self._cleanup_paths()
-
-        if not wav_bytes and quit_result.returncode != 0:
-            stderr = (quit_result.stderr or quit_result.stdout or "").strip()
-            raise RuntimeError(
-                "Failed to stop termux microphone recording.\n"
-                f"{stderr or 'Unknown error from termux-microphone-record -q.'}"
-            )
-
-        return wav_bytes
-
-    def elapsed(self) -> float:
-        """Seconds since recording started."""
-        if not self._recording:
-            return 0.0
-        return time.monotonic() - self._start_time
-
-    def get_level(self) -> float:
-        """Clip backend has no live meter; return a constant active level."""
-        return 0.25 if self._recording else 0.0
-
-    def _cleanup_paths(self, tmp_dir: Path | None = None) -> None:
-        """Remove temporary recording directory."""
-        target = tmp_dir if tmp_dir is not None else self._tmp_dir
-        if target is not None:
-            shutil.rmtree(target, ignore_errors=True)
-        self._tmp_dir = None
-        self._raw_path = None
-        self._wav_path = None
-
-    def _validate_tools(self) -> None:
-        """Validate required shell tools for termux capture backend."""
-        missing: list[str] = []
-        if shutil.which("termux-microphone-record") is None:
-            missing.append("termux-microphone-record not found in PATH")
-        if shutil.which("ffmpeg") is None:
-            missing.append("ffmpeg not found in PATH")
-
-        if missing:
-            details = "\n".join(missing)
-            raise RuntimeError(
-                "Termux capture backend unavailable.\n"
-                f"{details}\n"
-                "Install termux-api tools and ffmpeg, or set TNT_CAPTURE_BACKEND=live."
-            )

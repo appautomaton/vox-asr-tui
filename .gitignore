@@ -11,6 +11,10 @@ wheels/
 
 # Model weights & compiled binary — download via setup instructions
 bin/qwen_asr
-bin/qwen3-asr-0.6b/
+bin/qwen3-asr-*/
+bin/moonshine_asr
+bin/moonshine-models/
+bin/moonshine-runtime/
+bin/moonshine-src/
 *.safetensors
 *.gguf
